@@ -1,0 +1,15 @@
+# Бинарник
+logbook
+
+# Тестовые хранилища
+test-journal/
+test-*/
+
+# IDE
+.idea/
+.vscode/
+
+# Временные файлы
+*.swp
+*.swo
+*~
