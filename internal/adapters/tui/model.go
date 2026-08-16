@@ -19,6 +19,7 @@ type Model struct {
 	height    int
 
 	creating bool
+	editing  bool
 	textarea textarea.Model
 }
 
@@ -75,18 +76,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "ctrl+s":
-			if m.creating {
+			if m.creating || m.editing {
 				content := m.textarea.Value()
-
 				if content == "" {
 					m.creating = false
+					m.editing = false
 					return m, nil
 				}
 
 				lines := strings.Split(content, "\n")
 				filename := strings.TrimSpace(lines[0])
 				if filename == "" {
-					filename = "Новая заметка"
+					filename = "новая-заметка"
 				}
 				if !strings.HasSuffix(filename, ".md") {
 					filename += ".md"
@@ -102,21 +103,42 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				files, _ := m.fileRepo.List(m.vaultPath)
 				m.fileList = NewFileListModel(files)
 				m.creating = false
+				m.editing = false
 				return m, nil
 			}
+
 		case "esc":
-			if m.creating {
+			if m.creating || m.editing {
 				m.creating = false
+				m.editing = false
 				files, _ := m.fileRepo.List(m.vaultPath)
 				m.fileList = NewFileListModel(files)
 				return m, nil
+			}
+
+		case "e":
+			if !m.editing && !m.creating {
+				file := m.fileList.SelectedFile()
+				if file != "" {
+					content, err := m.fileRepo.Read(m.vaultPath, file)
+					if err == nil {
+						fullContent := file + "\n" + content
+						m.textarea.Reset()
+						m.textarea.SetValue(fullContent)
+						m.textarea.Focus()
+						m.textarea.SetWidth(m.width - 4)
+						m.textarea.SetHeight(m.height - 4)
+						m.editing = true
+						return m, textarea.Blink
+					}
+				}
 			}
 		}
 	}
 
 	var cmd tea.Cmd
 
-	if m.creating {
+	if m.creating || m.editing {
 		m.textarea, cmd = m.textarea.Update(msg)
 	} else {
 		m.fileList, cmd = m.fileList.Update(msg)
@@ -136,12 +158,15 @@ func (m *Model) View() string {
 		return "Загрузка..."
 	}
 
-	// Режим создания заметки
-	if m.creating {
+	if m.creating || m.editing {
+		headerText := "⚓ Новая заметка"
+		if m.editing {
+			headerText = "⚓ Редактирование"
+		}
 		header := lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("#ffffff")).
-			Render("⚓ Новая заметка")
+			Render(headerText)
 
 		footer := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#666666")).
