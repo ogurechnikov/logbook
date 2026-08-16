@@ -1,10 +1,13 @@
 package adapters
 
 import (
+	"github.com/ogurechnikov/logbook/internal/domain"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+var _ domain.FileRepository = (*FileOS)(nil)
 
 // FileOS — реализация FileRepository через стандартную файловую систему.
 type FileOS struct{}
@@ -37,4 +40,11 @@ func (f *FileOS) Read(vaultPath, filename string) (string, error) {
 		return "", err
 	}
 	return string(content), nil
+}
+
+func (f *FileOS) Save(vaultPath, filename, content string) error {
+	return os.WriteFile(
+		filepath.Join(vaultPath, filename),
+		[]byte(content),
+		0644)
 }
