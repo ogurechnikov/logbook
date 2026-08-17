@@ -18,8 +18,10 @@ type Model struct {
 	width     int
 	height    int
 
-	creating bool
-	editing  bool
+	creating      bool
+	editing       bool
+	confirmDelete bool
+
 	textarea textarea.Model
 }
 
@@ -52,7 +54,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-		if m.creating {
+		if m.creating || m.editing {
 			m.textarea.SetWidth(msg.Width - 4)
 			m.textarea.SetHeight(msg.Height - 4)
 		}
@@ -60,93 +62,43 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fileList, _ = m.fileList.Update(msg)
 		m.preview, _ = m.preview.Update(msg)
 		return m, nil
+
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			return m, tea.Quit
-
-		case "n":
-			if !m.creating {
-				m.creating = true
-				m.textarea.Reset()
-				m.textarea.Focus()
-				m.textarea.SetWidth(m.width - 4)
-				m.textarea.SetHeight(m.height - 4)
-				return m, textarea.Blink
-			}
-
-		case "ctrl+s":
-			if m.creating || m.editing {
-				content := m.textarea.Value()
-				if content == "" {
-					m.creating = false
-					m.editing = false
-					return m, nil
-				}
-
-				lines := strings.Split(content, "\n")
-				filename := strings.TrimSpace(lines[0])
-				if filename == "" {
-					filename = "новая-заметка"
-				}
-				if !strings.HasSuffix(filename, ".md") {
-					filename += ".md"
-				}
-
-				body := ""
-				if len(lines) > 1 {
-					body = strings.Join(lines[1:], "\n")
-				}
-
-				m.fileRepo.Save(m.vaultPath, filename, body)
-
-				files, _ := m.fileRepo.List(m.vaultPath)
-				m.fileList = NewFileListModel(files)
-				m.creating = false
-				m.editing = false
-				return m, nil
-			}
-
-		case "esc":
-			if m.creating || m.editing {
-				m.creating = false
-				m.editing = false
-				files, _ := m.fileRepo.List(m.vaultPath)
-				m.fileList = NewFileListModel(files)
-				return m, nil
-			}
-
-		case "e":
-			if !m.editing && !m.creating {
-				file := m.fileList.SelectedFile()
-				if file != "" {
-					content, err := m.fileRepo.Read(m.vaultPath, file)
-					if err == nil {
-						fullContent := file + "\n" + content
-						m.textarea.Reset()
-						m.textarea.SetValue(fullContent)
-						m.textarea.Focus()
-						m.textarea.SetWidth(m.width - 4)
-						m.textarea.SetHeight(m.height - 4)
-						m.editing = true
-						return m, textarea.Blink
-					}
-				}
-			}
+		if m.confirmDelete {
+			return m, m.handleDeleteConfirm(msg)
 		}
-	}
 
-	var cmd tea.Cmd
+		if m.creating || m.editing {
+			if msg.String() == "ctrl+s" || msg.String() == "esc" {
+				return m, m.handleEditMode(msg)
+			}
+			m.textarea, _ = m.textarea.Update(msg)
+			return m, nil
+		}
 
-	if m.creating || m.editing {
-		m.textarea, cmd = m.textarea.Update(msg)
-	} else {
+		// Режим просмотра
+		handled, cmd := m.handleViewMode(msg)
+		if handled {
+			return m, cmd
+		}
+
+		// Если не обработано — делегируем в fileList (j/k)
 		m.fileList, cmd = m.fileList.Update(msg)
 		if file := m.fileList.SelectedFile(); file != "" {
 			content, err := m.fileRepo.Read(m.vaultPath, file)
 			if err == nil {
 				m.preview.SetContent(content)
 			}
+		}
+		return m, cmd
+	}
+
+	var cmd tea.Cmd
+	m.fileList, cmd = m.fileList.Update(msg)
+	if file := m.fileList.SelectedFile(); file != "" {
+		content, err := m.fileRepo.Read(m.vaultPath, file)
+		if err == nil {
+			m.preview.SetContent(content)
 		}
 	}
 
@@ -156,6 +108,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) View() string {
 	if m.width == 0 {
 		return "Загрузка..."
+	}
+
+	if m.confirmDelete {
+		file := m.fileList.SelectedFile()
+		dialog := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			Padding(1, 2).
+			Render(fmt.Sprintf("Удалить '%s'? (y/N)", file))
+
+		return lipgloss.Place(
+			m.width,
+			m.height,
+			lipgloss.Center,
+			lipgloss.Center,
+			dialog,
+		)
 	}
 
 	if m.creating || m.editing {
@@ -193,7 +161,7 @@ func (m *Model) View() string {
 	// Нижняя панель
 	footer := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#666666")).
-		Render("j/k: навигация · n: новая · e: ред. · q: выход")
+		Render("j/k: навигация · n: новая · e: ред. · d: удалить · q: выход")
 
 	// Разделитель
 	separator := lipgloss.NewStyle().
@@ -221,7 +189,7 @@ func (m *Model) View() string {
 	)
 
 	// Собираем: header, контент (растянут), footer (прижат книзу)
-	contentHeight := m.height - 2 // минус header и footer
+	contentHeight := m.height - 2
 
 	mainContent = lipgloss.NewStyle().
 		Height(contentHeight).
@@ -233,4 +201,122 @@ func (m *Model) View() string {
 		mainContent,
 		footer,
 	)
+}
+
+// handleViewMode обрабатывает клавиши в режиме просмотра.
+// Возвращает true если клавиша была обработана, и команду.
+func (m *Model) handleViewMode(msg tea.KeyMsg) (bool, tea.Cmd) {
+	switch msg.String() {
+	case "n":
+		m.startCreate()
+		return true, textarea.Blink
+	case "e":
+		m.startEdit()
+		return true, textarea.Blink
+	case "d":
+		m.confirmDelete = true
+		return true, nil
+	case "q", "ctrl+c":
+		return true, tea.Quit
+	}
+	return false, nil
+}
+
+// handleEditMode обрабатывает клавиши в режиме создания/редактирования
+func (m *Model) handleEditMode(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "ctrl+s":
+		m.saveNote()
+	case "esc":
+		m.cancelEdit()
+	}
+	return nil
+}
+
+// handleDeleteConfirm обрабатывает клавиши в режиме подтверждения удаления
+func (m *Model) handleDeleteConfirm(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "y":
+		m.deleteSelectedFile()
+	case "n", "esc":
+		m.confirmDelete = false
+	}
+	return nil
+}
+
+func (m *Model) startCreate() {
+	m.creating = true
+	m.textarea.Reset()
+	m.textarea.Focus()
+	m.textarea.SetWidth(m.width - 4)
+	m.textarea.SetHeight(m.height - 4)
+}
+
+func (m *Model) startEdit() {
+	file := m.fileList.SelectedFile()
+	if file == "" {
+		return
+	}
+
+	content, err := m.fileRepo.Read(m.vaultPath, file)
+	if err != nil {
+		return
+	}
+
+	m.editing = true
+	m.textarea.Reset()
+	m.textarea.SetValue(file + "\n" + content)
+	m.textarea.Focus()
+	m.textarea.SetWidth(m.width - 4)
+	m.textarea.SetHeight(m.height - 4)
+}
+
+func (m *Model) saveNote() {
+	content := m.textarea.Value()
+	if content == "" {
+		m.creating = false
+		m.editing = false
+		return
+	}
+
+	lines := strings.Split(content, "\n")
+	filename := strings.TrimSpace(lines[0])
+	if filename == "" {
+		filename = "новая-заметка"
+	}
+	if !strings.HasSuffix(filename, ".md") {
+		filename += ".md"
+	}
+
+	body := ""
+	if len(lines) > 1 {
+		body = strings.Join(lines[1:], "\n")
+	}
+
+	m.fileRepo.Save(m.vaultPath, filename, body)
+	m.refreshFileList()
+	m.creating = false
+	m.editing = false
+}
+
+func (m *Model) cancelEdit() {
+	m.creating = false
+	m.editing = false
+	m.refreshFileList()
+}
+
+func (m *Model) deleteSelectedFile() {
+	file := m.fileList.SelectedFile()
+	if file == "" {
+		return
+	}
+
+	m.fileRepo.Delete(m.vaultPath, file)
+	m.refreshFileList()
+	m.confirmDelete = false
+}
+
+func (m *Model) refreshFileList() {
+	files, _ := m.fileRepo.List(m.vaultPath)
+	m.fileList = NewFileListModel(files)
 }

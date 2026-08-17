@@ -48,3 +48,7 @@ func (f *FileOS) Save(vaultPath, filename, content string) error {
 		[]byte(content),
 		0644)
 }
+
+func (f *FileOS) Delete(vaultPath, filename string) error {
+	return os.Remove(filepath.Join(vaultPath, filename))
+}
